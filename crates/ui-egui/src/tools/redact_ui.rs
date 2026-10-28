@@ -247,7 +247,7 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, over_text: impl Fn(Pos2) -> bo
             let r = Rect::from_two_pos(start, end).intersect(xf.rect);
             if r.width() >= 3.0 && r.height() >= 3.0 {
                 let (a, b) = (to_user(xf, info, page, r.min), to_user(xf, info, page, r.max));
-                view.pending_redaction = Some((page, vec![rect_quad([a[0], a[1], b[0], b[1]])]));
+                view.pending_redaction = vec![(page, vec![rect_quad([a[0], a[1], b[0], b[1]])])];
             }
         }
         return true;
@@ -256,8 +256,10 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, over_text: impl Fn(Pos2) -> bo
     if !over_text(p) {
         view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
     }
-    // The tool's own press, of the primary button: nothing drawn over the page here holds it.
-    if resp.drag_started_by(egui::PointerButton::Primary) && view.router.owner(page).is_none() {
+    // The tool's own press, of the primary button, on this page: nothing drawn over the page
+    // here holds it, and a quick drag from another page's text that is already over this one when
+    // egui calls it a drag is that page's (a text selection), not a box here.
+    if resp.drag_started_by(egui::PointerButton::Primary) && view.router.owner(page).is_none() && view.router.pressed_on(page) {
         let origin = ptr.origin.unwrap_or(p);
         if !over_text(origin) {
             view.redact_drag = Some((page, origin));
@@ -272,9 +274,11 @@ pub(crate) fn after_text(resp: &egui::Response, page: usize, info: &DocInfo, vie
     if !(resp.drag_stopped() || resp.double_clicked()) || view.redact_drag.is_some() {
         return;
     }
-    if let Some((p, quads)) = view.selection_quads(info).filter(|(p, _)| *p == page) {
+    // Once, from whichever of the selection's pages is drawn; a mark on each page it covers.
+    let marks = view.selection_quads(info);
+    if marks.iter().any(|(p, _)| *p == page) {
         view.clear_selection();
-        view.pending_redaction = Some((p, quads));
+        view.pending_redaction = marks;
     }
 }
 
