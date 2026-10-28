@@ -272,6 +272,9 @@ pub(crate) fn snapshot_tab_name(title: &str, file_name: &str, snapshot: &Snapsho
     }
 }
 
+/// Markup quadrilaterals in user space, one entry per page: (page, quads).
+pub type PageMarks = Vec<(usize, Vec<[f64; 8]>)>;
+
 pub struct DocView {
     pub id: DocId,
     pub zoom: f32,
@@ -452,7 +455,9 @@ pub struct DocView {
     /// Redact tool: the box being drawn, and the marks to add (page, quads) for the app to style,
     /// one per page (a text selection can cover several), added in one undo step.
     pub redact_drag: crate::redact_ui::AreaDrag,
-    pub pending_redaction: Vec<(usize, Vec<[f64; 8]>)>,
+    /// With the tool that made them, read when they are styled: a key handled later in the same
+    /// frame (Escape back to Select) must not turn an area highlight into a redaction.
+    pub pending_redaction: Option<(QuickTool, PageMarks)>,
     /// A text selection Redact did not mark: it covers a page whose text could not be read
     /// ([`ToolMarks::Unreadable`]). The app says so.
     pub(crate) redaction_refused: bool,
@@ -730,7 +735,7 @@ impl DocView {
             content: Default::default(),
             links: Default::default(),
             redact_drag: None,
-            pending_redaction: Vec::new(),
+            pending_redaction: None,
             redaction_refused: false,
             marks_waiting: None,
             crop_drag: None,
@@ -1288,7 +1293,7 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
             let (vx, vy) = xf.screen_to_view(p);
             text.as_ref().is_some_and(|t| t.glyphs.iter().any(|g| vx >= g.rect[0] && vx <= g.rect[2] && vy >= g.rect[1] && vy <= g.rect[3]))
         };
-        crate::redact_ui::page_input(cx, over_text, view)
+        crate::redact_ui::page_input(cx, tool, over_text, view)
     };
     let on_objects = tool == QuickTool::EditText && can_modify && crate::object_ui::page_input(cx, view);
     // Add text acts on the page's own paragraphs over them, and on the one its press was on until
@@ -3460,13 +3465,12 @@ fn apply_frame_requests(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui, 
     if std::mem::take(&mut app.views[index].redaction_refused) {
         app.notify_tr("Part of the selected text is on a page whose text could not be read, so nothing was marked for redaction. Mark that page with a box instead.");
     }
-    let marks = std::mem::take(&mut app.views[index].pending_redaction);
-    if !marks.is_empty() {
+    if let Some((made_by, marks)) = app.views[index].pending_redaction.take() {
         let author = app.comment_prefs.author.clone();
         let edits: Vec<pdfcraft_engine::Edit> = marks
             .into_iter()
             .map(|(page, quads)| {
-                if app.quick_tool == QuickTool::Comment(comments::CommentTool::Highlight) {
+                if made_by == QuickTool::Comment(comments::CommentTool::Highlight) {
                     // An area highlight: a highlight over the box.
                     let style = app.comment_prefs.style(comments::CommentTool::Highlight);
                     pdfcraft_engine::Edit::AddAnnotation(pdfcraft_engine::NewAnnotation {
